@@ -1,0 +1,136 @@
+---
+title: "Calculate DBH from iPhone LiDAR"
+author: "Hauke Gronenberg"
+date: "3/23/2021"
+output: html_document
+---
+
+```{r setup, echo=F, results='hide', warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(rgl)
+knitr::knit_hooks$set(webgl = hook_webgl)
+library(lidR)
+library(tidyverse)
+library(data.table)
+```
+
+## Data Collection
+
+App <https://apps.apple.com/us/app/3d-scanner-app/id1419913995>.
+
+
+## Data Analysis
+
+### Raw Point Cloud
+
+```{r warning=FALSE, message=FALSE, echo = F}
+
+las <- lidR::readLAS(system.file("extdata","trees_on_hill.laz",package = "iLiDAR"))
+
+# fix wrong orientation
+z <- las@data$Z
+
+las@data$Z <- las@data$Y
+las@data$Y <- z
+```
+
+```{r, webgl=TRUE, echo = F}
+lidR::plot(las, color = "RGB", axis=T)
+```
+
+### Ground Classification
+
+```{r ground_classification}
+# classify ground
+las <- classify_ground(las, algorithm = csf(sloop_smooth = T))
+
+las <- lidR::normalize_height(las       = las,
+                              algorithm = lidR::tin(),
+                              use_class = c(2))
+```
+
+### Tree Segmentation
+
+```{r}
+las <- lidR::filter_poi(las, Classification != 2)
+
+# point density above 3m is very sparse
+# therefore, points above 3m are assumed to be outliers
+las <- filter_poi(las, Z < 3,
+                       Z > 1.2)
+
+# find trunk location
+ttops <- find_trees(las, lmf(ws = 1))
+chm <- grid_canopy(las, 0.1, p2r())
+
+algo <- watershed(chm, th_tree = 1.2, tol = 1, ext = 1)
+las <- segment_trees(las, algo)
+
+```
+
+```{r, webgl=TRUE, echo = F}
+plot(las, color = "treeID")
+```
+
+## Tree Hulls
+
+```{r}
+# calculate tree hulls
+
+hulls <- lidR::delineate_crowns(las,
+                       type = "convex",
+                       attribute = "treeID")
+```
+
+```{r, echo=F}
+plot(hulls)
+plot(ttops, add = T)
+```
+
+### Filter *Trees* by Tree Tops
+
+```{r}
+sel <- sp::over(x = ttops, y = hulls)
+
+las <- lidR::filter_poi(las, treeID %in% sel$treeID)
+```
+
+### Calculate DBH
+
+```{r , warning=F}
+las_dbh <- filter_poi(las, Z < 1.31,
+                           Z > 1.29)
+
+ellipsoids <- iLiDAR:::create_crown_ellipsoids(las_dbh)
+```
+
+```{r, echo = F, warning=F}
+
+# source: https://stackoverflow.com/questions/6528180/ggplot2-plot-without-axes-legends-etc
+t <- theme(axis.line=element_blank(),
+      axis.text.x=element_blank(),
+      axis.text.y=element_blank(),
+      axis.ticks=element_blank(),
+      axis.title.x=element_blank(),
+      axis.title.y=element_blank(),
+      legend.position="none",
+      panel.background=element_blank(),
+      panel.border=element_blank(),
+      panel.grid.major=element_blank(),
+      panel.grid.minor=element_blank(),
+      plot.background=element_blank())
+
+  # source: https://yutani.rbind.io/post/geom-sf-text-and-geom-sf-label-are-coming/
+  # label
+  pos <- sf::st_point_on_surface(ellipsoids)
+
+  pos <- as.data.frame(sf::st_coordinates(pos))
+  pos$Y <- pos$Y - 0.5
+  pos$dbh <- round(ellipsoids$diameter_ellipsoid_mean,2)
+  
+  p <- ggplot(ellipsoids) +
+       geom_sf()
+  
+  p + geom_text(data = pos, aes(X, Y, label = dbh), colour = "black") +t
+  
+```
