@@ -1,4 +1,6 @@
+# credits: https://github.com/Lenostatos
 #' @import data.table
+#' @export
 create_crown_ellipsoids <- function(las){
   # Use data.table grouping to calculate ellipse data for each crown ID
   ellipsoid_hull_data <- las_dbh@data[,create_ellipsoid_data(X, Y), by = treeID]

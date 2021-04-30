@@ -1,7 +1,7 @@
 ---
 title: "Calculate DBH from iPhone LiDAR"
 author: "Hauke Gronenberg"
-date: "3/23/2021"
+date: "4/12/2021"
 output: html_document
 ---
 
@@ -14,17 +14,29 @@ library(tidyverse)
 library(data.table)
 ```
 
+In the following, I will present a first draft on what can be done with the iPhone's 
+LiDAR sensor in the field of forestry. My goal is to calculate the 
+[diameter at breast height (DBH)](https://en.wikipedia.org/wiki/Diameter_at_breast_height).
+
+The R code and the data of this analysis are available as 
+[GitHub repository](https://github.com/haukegron/iLiDAR).
+
 ## Data Collection
 
-App <https://apps.apple.com/us/app/3d-scanner-app/id1419913995>.
-
+For the scan I used the iOS App 
+[3d Scanner App](https://apps.apple.com/us/app/3d-scanner-app/id1419913995), 
+since it allows to export the data as [LAS file](https://en.wikipedia.org/wiki/LAS_file_format).
 
 ## Data Analysis
 
+Most of the analysis was done with the great R package [lidR](https://github.com/Jean-Romain/lidR).
+
 ### Raw Point Cloud
 
-```{r warning=FALSE, message=FALSE, echo = F}
+This is a plot of the unprocessed point cloud. Thanks to the combination of the
+iPhone's LiDAR sensor and the camera we have the color information for each point.
 
+```{r warning=FALSE, message=FALSE, echo = F}
 las <- lidR::readLAS(system.file("extdata","trees_on_hill.laz",package = "iLiDAR"))
 
 # fix wrong orientation
@@ -38,10 +50,18 @@ las@data$Y <- z
 lidR::plot(las, color = "RGB", axis=T)
 ```
 
-### Ground Classification
+### Ground Classification and Height Normalization
+
+For the ground classification of the point cloud lidR's build-in 
+*Cloth Simulation Function* (based on 
+[Zhang et al. 2016](https://www.mdpi.com/2072-4292/8/6/501/htm)) was used. 
+For further information on ground classification have look at section 
+[3 Ground classification](https://jean-romain.github.io/lidRbook/gnd.html) 
+of the lidR-book .
+In the following, the `lidR::tin()`-function ([R help](https://rdrr.io/cran/lidR/man/tin.html)) 
+was used to normalize the point cloud.
 
 ```{r ground_classification}
-# classify ground
 las <- classify_ground(las, algorithm = csf(sloop_smooth = T))
 
 las <- lidR::normalize_height(las       = las,
@@ -51,16 +71,21 @@ las <- lidR::normalize_height(las       = las,
 
 ### Tree Segmentation
 
+The next step of the analysis is to identify clusters in the point cloud.
+Therefore, the function `lidR::watershed()` 
+([R help](https://rdrr.io/cran/lidR/man/watershed.html)) was used.
+Due to the iPhone's LiDAR-sensor limitations and the chosen range setting within
+the [3d Scanner App](https://apps.apple.com/us/app/3d-scanner-app/id1419913995) 
+only a few points do occur above 3 meters. All of them will be excluded from 
+further analysis.
+Additionally, I am not interested in points below 1.2 meters.
+
 ```{r}
 las <- lidR::filter_poi(las, Classification != 2)
 
-# point density above 3m is very sparse
-# therefore, points above 3m are assumed to be outliers
 las <- filter_poi(las, Z < 3,
                        Z > 1.2)
 
-# find trunk location
-ttops <- find_trees(las, lmf(ws = 1))
 chm <- grid_canopy(las, 0.1, p2r())
 
 algo <- watershed(chm, th_tree = 1.2, tol = 1, ext = 1)
@@ -68,18 +93,25 @@ las <- segment_trees(las, algo)
 
 ```
 
+As we can see, the segmentation was applied successfully.
+However, I have to get rid of the bushes since I am only interested on trees.
+
 ```{r, webgl=TRUE, echo = F}
 plot(las, color = "treeID")
 ```
 
-## Tree Hulls
+### Tree Hulls and Selection of *Trees* by Tree Tops
+
+For each segmented tree (including the remaining bushes), the convex hull was calculated with the function `lidR::delineate_crowns` ([R help](https://rdrr.io/cran/lidR/man/delineate_crowns.html)).
+To identify trees (and subsequently remove bushes) the build-in local maximum filter `lmf()` ([R help](https://rdrr.io/cran/lidR/man/lmf.html)) was applied.
+
 
 ```{r}
-# calculate tree hulls
-
 hulls <- lidR::delineate_crowns(las,
                        type = "convex",
                        attribute = "treeID")
+# find trunk location
+ttops <- find_trees(las, lmf(ws = 1))
 ```
 
 ```{r, echo=F}
@@ -87,21 +119,22 @@ plot(hulls)
 plot(ttops, add = T)
 ```
 
-### Filter *Trees* by Tree Tops
-
 ```{r}
 sel <- sp::over(x = ttops, y = hulls)
 
 las <- lidR::filter_poi(las, treeID %in% sel$treeID)
 ```
 
-### Calculate DBH
+### Calculation of the DBH
+
+The final step of this analysis is to calculate the [diameter at breast height](https://en.wikipedia.org/wiki/Diameter_at_breast_height) for all identified trees.
+Therefore, I made use of code developed by [Leon](https://github.com/Lenostatos).
 
 ```{r , warning=F}
 las_dbh <- filter_poi(las, Z < 1.31,
                            Z > 1.29)
 
-ellipsoids <- iLiDAR:::create_crown_ellipsoids(las_dbh)
+ellipsoids <- iLiDAR::create_crown_ellipsoids(las_dbh)
 ```
 
 ```{r, echo = F, warning=F}
